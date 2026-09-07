@@ -1,68 +1,41 @@
 package ahocorasick
 
-import (
-	"math"
-	"unicode/utf8"
-)
+type Option func(opt *options)
 
-type Option func(opt *option)
+// WithTermIdx 匹配结果 MatchResult 输出命中的 term 在建树 terms 数组中的索引，可以用来关联业务信息；
+// 开启后在 MatchAllUnique 去重时，建树时 terms 数组里的每个 term 均被视为不同的 term（因为可能会关联不同的业务信息）；
+// 代价是额外 O(N) 的空间复杂度
+func WithTermIdx() Option {
+	return func(opt *options) {
+		opt.withTermIdx = true
+	}
+}
 
-// WithOutputLink 构建AC自动机时生成输出链接(字典后缀链接)，可以加快匹配速度，代价是额外O(N)的空间复杂度
+// WithOutputLink 构建AC自动机时生成输出链接(字典后缀链接)，可以加快匹配速度，代价是额外 O(N) 的空间复杂度
 func WithOutputLink() Option {
-	return func(opt *option) {
+	return func(opt *options) {
 		opt.withOutputLink = true
 	}
 }
 
-type DType int
-
-const (
-	DTypeAuto DType = iota
-	DTypeUint8
-	DTypeUint16
-	DTypeUint32
-	DTypeUint64
-)
-
 // WithDType 指定节点索引等字段的数据类型，默认会自动指定保证不会溢出，使用不当可能会导致行为不符合预期甚至panic，谨慎使用
 func WithDType(dt DType) Option {
-	return func(opt *option) {
+	return func(opt *options) {
 		opt.dType = dt
 	}
 }
 
-type option struct {
-	trieInitCap    int
-	withOutputLink bool
-	dType          DType
+// WithFastBuild 启用快速构建模式，该模式将构建时间复杂度从 O(NlogN) 降低到 O(N)，实测构建耗时可减少约 0%~50%；
+// 代价是辅助构建的临时内存开销由额外约 20% 增加到额外约 165%
+func WithFastBuild() Option {
+	return func(opt *options) {
+		opt.fastBuild = true
+	}
 }
 
-func (opt *option) init(terms []string, options ...Option) {
-	for _, f := range options {
-		if f == nil {
-			continue
-		}
-		f(opt)
-	}
-
-	maxNodeCnt := 1
-	maxTermLen := 0
-	for _, term := range terms {
-		maxNodeCnt += utf8.RuneCountInString(term)
-		maxTermLen = max(maxTermLen, len(term))
-	}
-	if opt.trieInitCap <= 0 {
-		opt.trieInitCap = maxNodeCnt
-	}
-	if opt.dType < DTypeUint8 || opt.dType > DTypeUint64 {
-		if maxNodeCnt < math.MaxUint8 && maxTermLen <= math.MaxUint8 {
-			opt.dType = DTypeUint8
-		} else if maxNodeCnt < math.MaxUint16 && maxTermLen <= math.MaxUint16 {
-			opt.dType = DTypeUint16
-		} else if maxNodeCnt < math.MaxUint32 && maxTermLen <= math.MaxUint32 {
-			opt.dType = DTypeUint32
-		} else {
-			opt.dType = DTypeUint64
-		}
-	}
+type options struct {
+	withTermIdx    bool
+	withOutputLink bool
+	dType          DType
+	fastBuild      bool
 }

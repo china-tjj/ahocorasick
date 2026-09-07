@@ -6,17 +6,17 @@ import (
 )
 
 func NewTrie(terms []string, options ...Option) ITrie {
-	var opt option
-	opt.init(terms, options...)
-	switch opt.dType {
+	var params buildParams
+	params.init(terms, options...)
+	switch params.dType {
 	case DTypeUint8:
-		return newCompactTrie[uint8](terms, &opt)
+		return newCompactTrie[uint8](terms, &params)
 	case DTypeUint16:
-		return newCompactTrie[uint16](terms, &opt)
+		return newCompactTrie[uint16](terms, &params)
 	case DTypeUint32:
-		return newCompactTrie[uint32](terms, &opt)
+		return newCompactTrie[uint32](terms, &params)
 	case DTypeUint64:
-		return newCompactTrie[uint64](terms, &opt)
+		return newCompactTrie[uint64](terms, &params)
 	default:
 		panic("unreachable")
 	}
@@ -42,17 +42,17 @@ func LoadTrie(r io.Reader) (ITrie, error) {
 }
 
 func NewAcAutomaton(terms []string, options ...Option) IAcAutomaton {
-	var opt option
-	opt.init(terms, options...)
-	switch opt.dType {
+	var params buildParams
+	params.init(terms, options...)
+	switch params.dType {
 	case DTypeUint8:
-		return newAcAutomaton[uint8](terms, &opt)
+		return newAcAutomaton[uint8](terms, &params)
 	case DTypeUint16:
-		return newAcAutomaton[uint16](terms, &opt)
+		return newAcAutomaton[uint16](terms, &params)
 	case DTypeUint32:
-		return newAcAutomaton[uint32](terms, &opt)
+		return newAcAutomaton[uint32](terms, &params)
 	case DTypeUint64:
-		return newAcAutomaton[uint64](terms, &opt)
+		return newAcAutomaton[uint64](terms, &params)
 	default:
 		panic("unreachable")
 	}

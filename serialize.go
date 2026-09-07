@@ -11,7 +11,7 @@ import (
 
 const (
 	magicNumber = (int32('t') | int32('j')<<8 | int32('j')<<16 | int32('n')<<24) ^ (int32('b') | int32('6')<<8 | int32('6')<<16 | int32('6')<<24)
-	version     = uint8(0x00)
+	version     = uint8(1)
 
 	typeCompactTrie = uint8(iota)
 	typeAcAutomaton
