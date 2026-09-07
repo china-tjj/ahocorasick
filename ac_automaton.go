@@ -12,48 +12,43 @@ type acAutomaton[U uints] struct {
 	outputLink []U
 }
 
-func newAcAutomaton[U uints](terms []string, opt *option) *acAutomaton[U] {
+func newAcAutomaton[U uints](terms []string, params *buildParams) *acAutomaton[U] {
 	var ac acAutomaton[U]
-	ac.build(terms, opt)
+	ac.build(terms, params)
 	return &ac
 }
 
-func (ac *acAutomaton[U]) build(terms []string, opt *option) {
-	ac.compactTrie.build(terms, opt)
-	// bfs 构建fail和outputLink
-	root := ac.root
+func (ac *acAutomaton[U]) build(terms []string, params *buildParams) {
+	ac.compactTrie.build(terms, params)
+	// bfs 构建 fail 和 outputLink
 	ac.fail = make([]U, ac.nodeCnt())
-	ac.fail[root] = ^U(0)
-	if opt.withOutputLink {
+	ac.fail[0] = ^U(0)
+	if params.withOutputLink {
 		ac.outputLink = make([]U, ac.nodeCnt())
-		ac.outputLink[root] = ^U(0)
+		ac.outputLink[0] = ^U(0)
 	} else {
 		ac.outputLink = ac.fail
 	}
-	var queue deque[U]
-	queue.PushBack(root)
-	for queue.Len() > 0 {
-		p := queue.Front()
-		queue.PopFront()
-		ac.rangeChildren(p, func(char rune, child U) bool {
-			// 计算fail：节点的fail指针默认为根，从父节点的fail往上找第一个存在的相同child（字符相同），把这个child作为fail指针
-			fail := root
-			for f := ac.fail[p]; f != ^U(0); f = ac.fail[f] {
-				if fc, ok := ac.getChild(f, char); ok {
+	// ac.nodes是bfs顺序的，直接遍历即可，无需额外维护 bfs 队列
+	for i := range ac.nodes {
+		ac.rangeChildren(U(i), func(r rune, child U) bool {
+			// 计算fail：节点的 fail 指针默认为根，从父节点的 fail 往上找第一个存在的相同 child（字符相同），把这个 child 作为 fail 指针
+			var fail U
+			for f := ac.fail[i]; f != ^U(0); f = ac.fail[f] {
+				if fc, ok := ac.getChild(f, r); ok {
 					fail = fc
 					break
 				}
 			}
 			ac.fail[child] = fail
 			// 计算outputLink
-			if opt.withOutputLink {
-				if ac.getTermsLen(fail) > 0 {
+			if params.withOutputLink {
+				if ac.hasTerm(fail) {
 					ac.outputLink[child] = fail
 				} else {
 					ac.outputLink[child] = ac.outputLink[fail]
 				}
 			}
-			queue.PushBack(child)
 			return true
 		})
 	}
@@ -110,25 +105,39 @@ func (ac *acAutomaton[U]) load(r io.Reader) error {
 }
 
 func (ac *acAutomaton[U]) MatchFirst(query string) (result MatchResult, ok bool) {
-	p := ac.root
+	p := U(0)
 outer:
-	for byteIdx, char := range query {
+	for byteIdx := 0; byteIdx < len(query); {
+		r, size := utf8.DecodeRuneInString(query[byteIdx:])
+		byteIdx += size
+		// 遇到非法字符，回退到root
+		if r == utf8.RuneError && size == 1 {
+			p = 0
+			continue
+		}
 		// 匹配成功，移动到子节点，失配时，沿fail链回退
 		for {
-			if child, ok := ac.getChild(p, char); ok {
+			if child, ok := ac.getChild(p, r); ok {
 				p = child
 				break
 			}
-			if p == ac.root {
+			if p == 0 {
 				continue outer
 			}
 			p = ac.fail[p]
 		}
 		// 沿输出链回溯第一个匹配结果
-		for node := p; node != ^U(0); node = ac.outputLink[node] {
-			if term, ok := ac.getFirstTerm(node); ok {
-				endIdx := byteIdx + utf8.RuneLen(char)
-				return makeMatchResult(query, term, endIdx), true
+		if len(ac.terms) > 0 { // withTermIdx
+			for i := p; i != ^U(0); i = ac.outputLink[i] {
+				if termLen, termIdx, ok := ac.getFirstTerm(i); ok {
+					return makeMatchResultWithTermIdx(query, termLen, termIdx, byteIdx), true
+				}
+			}
+		} else {
+			for i := p; i != ^U(0); i = ac.outputLink[i] {
+				if termLen := ac.nodes[i].output; termLen > 0 {
+					return makeMatchResult(query, termLen, byteIdx), true
+				}
 			}
 		}
 	}
@@ -137,25 +146,40 @@ outer:
 
 func (ac *acAutomaton[U]) MatchAll(query string) []MatchResult {
 	var result []MatchResult
-	p := ac.root
+	p := U(0)
 outer:
-	for byteIdx, char := range query {
-		// 匹配成功，移动到子节点，失配时，沿fail链回退
+	for byteIdx := 0; byteIdx < len(query); {
+		r, size := utf8.DecodeRuneInString(query[byteIdx:])
+		byteIdx += size
+		// 遇到非法字符，回退到 root
+		if r == utf8.RuneError && size == 1 {
+			p = 0
+			continue
+		}
+		// 匹配成功，移动到子节点，失配时，沿 fail 链回退
 		for {
-			if child, ok := ac.getChild(p, char); ok {
+			if child, ok := ac.getChild(p, r); ok {
 				p = child
 				break
 			}
-			if p == ac.root {
+			if p == 0 {
 				continue outer
 			}
 			p = ac.fail[p]
 		}
-		endIdx := byteIdx + utf8.RuneLen(char)
 		// 沿输出链回溯所有匹配结果
-		for node := p; node != ^U(0); node = ac.outputLink[node] {
-			for _, term := range ac.getTerms(node) {
-				result = append(result, makeMatchResult(query, term, endIdx))
+		if len(ac.terms) > 0 { // withTermIdx
+			for i := p; i != ^U(0); i = ac.outputLink[i] {
+				termLen, termIndexes := ac.getTerms(i)
+				for _, termIdx := range termIndexes {
+					result = append(result, makeMatchResultWithTermIdx(query, termLen, termIdx, byteIdx))
+				}
+			}
+		} else {
+			for i := p; i != ^U(0); i = ac.outputLink[i] {
+				if termLen := ac.nodes[i].output; termLen > 0 {
+					result = append(result, makeMatchResult(query, termLen, byteIdx))
+				}
 			}
 		}
 	}
@@ -165,30 +189,50 @@ outer:
 func (ac *acAutomaton[U]) MatchAllUnique(query string) []MatchResult {
 	var result []MatchResult
 	visit := make(map[U]struct{})
-	p := ac.root
+	p := U(0)
 outer:
-	for byteIdx, char := range query {
-		// 匹配成功，移动到子节点，失配时，沿fail链回退
+	for byteIdx := 0; byteIdx < len(query); {
+		r, size := utf8.DecodeRuneInString(query[byteIdx:])
+		byteIdx += size
+		// 遇到非法字符，回退到root
+		if r == utf8.RuneError && size == 1 {
+			p = 0
+			continue
+		}
+		// 匹配成功，移动到子节点，失配时，沿 fail 链回退
 		for {
-			if child, ok := ac.getChild(p, char); ok {
+			if child, ok := ac.getChild(p, r); ok {
 				p = child
 				break
 			}
-			if p == ac.root {
+			if p == 0 {
 				continue outer
 			}
 			p = ac.fail[p]
 		}
-		endIdx := byteIdx + utf8.RuneLen(char)
 		// 沿输出链回溯所有匹配结果
-		for node := p; node != ^U(0); node = ac.outputLink[node] {
-			if _, ok := visit[node]; ok {
-				// 当节点已经访问时，其输出链上的必然也访问过了，直接break
-				break
+		if len(ac.terms) > 0 { // withTermIdx
+			for i := p; i != ^U(0); i = ac.outputLink[i] {
+				if _, ok := visit[i]; ok {
+					// 当节点已经访问时，其输出链上的必然也访问过了，直接break
+					break
+				}
+				visit[i] = struct{}{}
+				termLen, termIndexes := ac.getTerms(i)
+				for _, termIdx := range termIndexes {
+					result = append(result, makeMatchResultWithTermIdx(query, termLen, termIdx, byteIdx))
+				}
 			}
-			visit[node] = struct{}{}
-			for _, term := range ac.getTerms(node) {
-				result = append(result, makeMatchResult(query, term, endIdx))
+		} else {
+			for i := p; i != ^U(0); i = ac.outputLink[i] {
+				if _, ok := visit[i]; ok {
+					// 当节点已经访问时，其输出链上的必然也访问过了，直接break
+					break
+				}
+				visit[i] = struct{}{}
+				if termLen := ac.nodes[i].output; termLen > 0 {
+					result = append(result, makeMatchResult(query, termLen, byteIdx))
+				}
 			}
 		}
 	}
