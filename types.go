@@ -26,3 +26,24 @@ func (t DType) String() string {
 		return "Unknown"
 	}
 }
+
+type CharType int
+
+const (
+	CharTypeAuto CharType = iota
+	CharTypeRune
+	CharTypeByte
+)
+
+func (t CharType) String() string {
+	switch t {
+	case CharTypeAuto:
+		return "Auto"
+	case CharTypeRune:
+		return "Rune"
+	case CharTypeByte:
+		return "Byte"
+	default:
+		return "Unknown"
+	}
+}
