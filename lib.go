@@ -8,18 +8,7 @@ import (
 func NewTrie(terms []string, options ...Option) ITrie {
 	var params buildParams
 	params.init(terms, options...)
-	switch params.dType {
-	case DTypeUint8:
-		return newCompactTrie[uint8](terms, &params)
-	case DTypeUint16:
-		return newCompactTrie[uint16](terms, &params)
-	case DTypeUint32:
-		return newCompactTrie[uint32](terms, &params)
-	case DTypeUint64:
-		return newCompactTrie[uint64](terms, &params)
-	default:
-		panic("unreachable")
-	}
+	return newCompactTrie(terms, &params)
 }
 
 func LoadTrieFromFile(filename string) (ITrie, error) {
@@ -27,15 +16,15 @@ func LoadTrieFromFile(filename string) (ITrie, error) {
 }
 
 func LoadTrie(r io.Reader) (ITrie, error) {
-	typ, dSize, err := readHeader(r)
+	typ, dType, charType, err := readHeader(r)
 	if err != nil {
 		return nil, err
 	}
 	switch typ {
 	case typeCompactTrie:
-		return loadCompactTrie(r, dSize)
+		return loadCompactTrie(r, dType, charType)
 	case typeAcAutomaton:
-		return loadAcAutomaton(r, dSize)
+		return loadAcAutomaton(r, dType, charType)
 	default:
 		return nil, fmt.Errorf("unknown struct type %d", typ)
 	}
@@ -44,18 +33,7 @@ func LoadTrie(r io.Reader) (ITrie, error) {
 func NewAcAutomaton(terms []string, options ...Option) IAcAutomaton {
 	var params buildParams
 	params.init(terms, options...)
-	switch params.dType {
-	case DTypeUint8:
-		return newAcAutomaton[uint8](terms, &params)
-	case DTypeUint16:
-		return newAcAutomaton[uint16](terms, &params)
-	case DTypeUint32:
-		return newAcAutomaton[uint32](terms, &params)
-	case DTypeUint64:
-		return newAcAutomaton[uint64](terms, &params)
-	default:
-		panic("unreachable")
-	}
+	return newAcAutomaton(terms, &params)
 }
 
 func LoadAcAutomatonFromFile(filename string) (IAcAutomaton, error) {
@@ -63,15 +41,15 @@ func LoadAcAutomatonFromFile(filename string) (IAcAutomaton, error) {
 }
 
 func LoadAcAutomaton(r io.Reader) (IAcAutomaton, error) {
-	typ, dSize, err := readHeader(r)
+	typ, dType, charType, err := readHeader(r)
 	if err != nil {
 		return nil, err
 	}
 	switch typ {
 	case typeCompactTrie:
-		return nil, fmt.Errorf("this is a trie instead of an AC automaton, please use LoadTrie")
+		return nil, fmt.Errorf("this is a trie instead of an AC automaton, use LoadTrie instead")
 	case typeAcAutomaton:
-		return loadAcAutomaton(r, dSize)
+		return loadAcAutomaton(r, dType, charType)
 	default:
 		return nil, fmt.Errorf("unknown struct type %d", typ)
 	}

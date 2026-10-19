@@ -11,7 +11,7 @@ import (
 
 const (
 	magicNumber = (int32('t') | int32('j')<<8 | int32('j')<<16 | int32('n')<<24) ^ (int32('b') | int32('6')<<8 | int32('6')<<16 | int32('6')<<24)
-	version     = uint8(1)
+	version     = uint8(2)
 
 	typeCompactTrie = uint8(iota)
 	typeAcAutomaton
@@ -48,7 +48,7 @@ func loadFromFile[T any](filename string, loader func(r io.Reader) (T, error)) (
 	return loader(br)
 }
 
-func writeHeader[U uints](w io.Writer, typ uint8) error {
+func writeHeader[U uints, C char](w io.Writer, typ uint8) error {
 	if err := write(w, magicNumber); err != nil {
 		return err
 	}
@@ -58,96 +58,91 @@ func writeHeader[U uints](w io.Writer, typ uint8) error {
 	if err := write(w, typ); err != nil {
 		return err
 	}
-	if err := write(w, uint8(unsafe.Sizeof(U(0)))); err != nil {
+	if err := writeDType[U](w); err != nil {
+		return err
+	}
+	if err := writeCharType[C](w); err != nil {
 		return err
 	}
 	return nil
 }
 
-func readHeader(r io.Reader) (uint8, uint8, error) {
+func writeDType[U uints](w io.Writer) error {
+	switch unsafe.Sizeof(U(0)) {
+	case 1:
+		return write(w, uint8(DTypeUint8))
+	case 2:
+		return write(w, uint8(DTypeUint16))
+	case 4:
+		return write(w, uint8(DTypeUint32))
+	case 8:
+		return write(w, uint8(DTypeUint64))
+	default:
+		panic("unreachable")
+	}
+}
+
+func writeCharType[C char](w io.Writer) error {
+	switch unsafe.Sizeof(C(0)) {
+	case 1:
+		return write(w, uint8(CharTypeByte))
+	case 4:
+		return write(w, uint8(CharTypeRune))
+	default:
+		panic("unreachable")
+	}
+}
+
+func readHeader(r io.Reader) (uint8, DType, CharType, error) {
 	magic, err := read[int32](r)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 	if magic != magicNumber {
-		return 0, 0, errors.New("magic number mismatch")
+		return 0, 0, 0, errors.New("magic number mismatch")
 	}
 	v, err := read[uint8](r)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 	if v != version {
-		return 0, 0, fmt.Errorf("version mismatch, expected %x, got %x", version, v)
+		return 0, 0, 0, fmt.Errorf("version mismatch, expected %x, got %x", version, v)
 	}
 	typ, err := read[uint8](r)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
-	dSize, err := read[uint8](r)
+	dType, err := readDType(r)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
-	return typ, dSize, nil
+	charType, err := readCharType(r)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return typ, dType, charType, nil
 }
 
-func loadCompactTrie(r io.Reader, dSize uint8) (ITrie, error) {
-	switch dSize {
-	case 1:
-		var ct compactTrie[uint8]
-		if err := ct.load(r); err != nil {
-			return nil, err
-		}
-		return &ct, nil
-	case 2:
-		var ct compactTrie[uint16]
-		if err := ct.load(r); err != nil {
-			return nil, err
-		}
-		return &ct, nil
-	case 4:
-		var ct compactTrie[uint32]
-		if err := ct.load(r); err != nil {
-			return nil, err
-		}
-		return &ct, nil
-	case 8:
-		var ct compactTrie[uint64]
-		if err := ct.load(r); err != nil {
-			return nil, err
-		}
-		return &ct, nil
-	default:
-		return nil, fmt.Errorf("unknown data size %d", dSize)
+func readDType(r io.Reader) (DType, error) {
+	v, err := read[uint8](r)
+	if err != nil {
+		return 0, err
 	}
+	dType := DType(v)
+	if dType < DTypeUint8 || dType > DTypeUint64 {
+		return 0, fmt.Errorf("unknown data type %d", dType)
+	}
+	return dType, nil
 }
 
-func loadAcAutomaton(r io.Reader, dSize uint8) (IAcAutomaton, error) {
-	switch dSize {
-	case 1:
-		var ac acAutomaton[uint8]
-		if err := ac.load(r); err != nil {
-			return nil, err
-		}
-		return &ac, nil
-	case 2:
-		var ac acAutomaton[uint16]
-		if err := ac.load(r); err != nil {
-			return nil, err
-		}
-		return &ac, nil
-	case 4:
-		var ac acAutomaton[uint32]
-		if err := ac.load(r); err != nil {
-			return nil, err
-		}
-		return &ac, nil
-	case 8:
-		var ac acAutomaton[uint64]
-		if err := ac.load(r); err != nil {
-			return nil, err
-		}
-		return &ac, nil
-	default:
-		return nil, fmt.Errorf("unknown data size %d", dSize)
+func readCharType(r io.Reader) (CharType, error) {
+	v, err := read[uint8](r)
+	if err != nil {
+		return 0, err
 	}
+	charType := CharType(v)
+	if charType != CharTypeByte && charType != CharTypeRune {
+		return 0, fmt.Errorf("unknown char type %d", charType)
+	}
+	return charType, nil
 }

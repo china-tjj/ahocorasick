@@ -2,40 +2,99 @@ package ahocorasick
 
 import (
 	"io"
-	"unicode/utf8"
 	"unsafe"
 )
 
-type acAutomaton[U uints] struct {
-	compactTrie[U]
+type acAutomaton[U uints, C char] struct {
+	compactTrie[U, C]
 	fail       []U
 	outputLink []U
 }
 
-func newAcAutomaton[U uints](terms []string, params *buildParams) *acAutomaton[U] {
-	var ac acAutomaton[U]
+func newAcAutomaton(terms []string, params *buildParams) IAcAutomaton {
+	switch params.dType {
+	case DTypeUint8:
+		return newAcAutomatonD[uint8](terms, params)
+	case DTypeUint16:
+		return newAcAutomatonD[uint16](terms, params)
+	case DTypeUint32:
+		return newAcAutomatonD[uint32](terms, params)
+	case DTypeUint64:
+		return newAcAutomatonD[uint64](terms, params)
+	default:
+		panic("unreachable")
+	}
+}
+
+func newAcAutomatonD[U uints](terms []string, params *buildParams) IAcAutomaton {
+	switch params.charType {
+	case CharTypeByte:
+		return newAcAutomatonDC[U, byte](terms, params)
+	case CharTypeRune:
+		return newAcAutomatonDC[U, rune](terms, params)
+	default:
+		panic("unreachable")
+	}
+}
+
+func newAcAutomatonDC[U uints, C char](terms []string, params *buildParams) *acAutomaton[U, C] {
+	var ac acAutomaton[U, C]
 	ac.build(terms, params)
 	return &ac
 }
 
-func (ac *acAutomaton[U]) build(terms []string, params *buildParams) {
+func loadAcAutomaton(r io.Reader, dType DType, charType CharType) (IAcAutomaton, error) {
+	switch dType {
+	case DTypeUint8:
+		return loadAcAutomatonD[uint8](r, charType)
+	case DTypeUint16:
+		return loadAcAutomatonD[uint16](r, charType)
+	case DTypeUint32:
+		return loadAcAutomatonD[uint32](r, charType)
+	case DTypeUint64:
+		return loadAcAutomatonD[uint64](r, charType)
+	default:
+		panic("unreachable")
+	}
+}
+
+func loadAcAutomatonD[U uints](r io.Reader, charType CharType) (IAcAutomaton, error) {
+	switch charType {
+	case CharTypeByte:
+		return loadAcAutomatonDC[U, byte](r)
+	case CharTypeRune:
+		return loadAcAutomatonDC[U, rune](r)
+	default:
+		panic("unreachable")
+	}
+}
+
+func loadAcAutomatonDC[U uints, C char](r io.Reader) (*acAutomaton[U, C], error) {
+	var ac acAutomaton[U, C]
+	if err := ac.load(r); err != nil {
+		return nil, err
+	}
+	return &ac, nil
+}
+
+func (ac *acAutomaton[U, C]) build(terms []string, params *buildParams) {
 	ac.compactTrie.build(terms, params)
 	// bfs 构建 fail 和 outputLink
-	ac.fail = make([]U, ac.nodeCnt())
+	ac.fail = make([]U, len(ac.nodes))
 	ac.fail[0] = ^U(0)
 	if params.withOutputLink {
-		ac.outputLink = make([]U, ac.nodeCnt())
+		ac.outputLink = make([]U, len(ac.nodes))
 		ac.outputLink[0] = ^U(0)
 	} else {
 		ac.outputLink = ac.fail
 	}
 	// ac.nodes是bfs顺序的，直接遍历即可，无需额外维护 bfs 队列
 	for i := range ac.nodes {
-		ac.rangeChildren(U(i), func(r rune, child U) bool {
+		ac.rangeChildren(U(i), func(c C, child U) {
 			// 计算fail：节点的 fail 指针默认为根，从父节点的 fail 往上找第一个存在的相同 child（字符相同），把这个 child 作为 fail 指针
 			var fail U
 			for f := ac.fail[i]; f != ^U(0); f = ac.fail[f] {
-				if fc, ok := ac.getChild(f, r); ok {
+				if fc, ok := ac.getChild(f, c); ok {
 					fail = fc
 					break
 				}
@@ -49,12 +108,53 @@ func (ac *acAutomaton[U]) build(terms []string, params *buildParams) {
 					ac.outputLink[child] = ac.outputLink[fail]
 				}
 			}
-			return true
 		})
 	}
 }
 
-func (ac *acAutomaton[U]) save(w io.Writer) error {
+func (ac *acAutomaton[U, C]) match(query string, unique bool, yield func(r MatchResult) bool) {
+	var visit map[U]struct{}
+	if unique {
+		visit = make(map[U]struct{})
+	}
+	p := U(0)
+outer:
+	for i := 0; i < len(query); {
+		c, size, ok := decodeCharInString[C](query[i:])
+		i += size
+		// 遇到非法字符，回退到 root
+		if !ok {
+			p = 0
+			continue
+		}
+		// 匹配成功，移动到子节点，失配时，沿fail链回退
+		for {
+			if child, ok := ac.getChild(p, c); ok {
+				p = child
+				break
+			}
+			if p == 0 {
+				continue outer
+			}
+			p = ac.fail[p]
+		}
+		// 沿输出链回溯
+		for q := p; q != ^U(0); q = ac.outputLink[q] {
+			if unique {
+				if _, ok := visit[q]; ok {
+					// 当节点已经访问时，其输出链上的必然也访问过了，直接跳过
+					continue outer
+				}
+				visit[q] = struct{}{}
+			}
+			if !ac.rangeTerms(q, query, i, yield) {
+				return
+			}
+		}
+	}
+}
+
+func (ac *acAutomaton[U, C]) save(w io.Writer) error {
 	if err := ac.compactTrie.save(w); err != nil {
 		return err
 	}
@@ -79,7 +179,7 @@ func (ac *acAutomaton[U]) save(w io.Writer) error {
 	return nil
 }
 
-func (ac *acAutomaton[U]) load(r io.Reader) error {
+func (ac *acAutomaton[U, C]) load(r io.Reader) error {
 	var err error
 	if err = ac.compactTrie.load(r); err != nil {
 		return err
@@ -104,148 +204,51 @@ func (ac *acAutomaton[U]) load(r io.Reader) error {
 	return nil
 }
 
-func (ac *acAutomaton[U]) MatchFirst(query string) (result MatchResult, ok bool) {
-	p := U(0)
-outer:
-	for byteIdx := 0; byteIdx < len(query); {
-		r, size := utf8.DecodeRuneInString(query[byteIdx:])
-		byteIdx += size
-		// 遇到非法字符，回退到root
-		if r == utf8.RuneError && size == 1 {
-			p = 0
-			continue
-		}
-		// 匹配成功，移动到子节点，失配时，沿fail链回退
-		for {
-			if child, ok := ac.getChild(p, r); ok {
-				p = child
-				break
-			}
-			if p == 0 {
-				continue outer
-			}
-			p = ac.fail[p]
-		}
-		// 沿输出链回溯第一个匹配结果
-		if len(ac.terms) > 0 { // withTermIdx
-			for i := p; i != ^U(0); i = ac.outputLink[i] {
-				if termLen, termIdx, ok := ac.getFirstTerm(i); ok {
-					return makeMatchResultWithTermIdx(query, termLen, termIdx, byteIdx), true
-				}
-			}
-		} else {
-			for i := p; i != ^U(0); i = ac.outputLink[i] {
-				if termLen := ac.nodes[i].output; termLen > 0 {
-					return makeMatchResult(query, termLen, byteIdx), true
-				}
-			}
-		}
-	}
-	return MatchResult{}, false
+func (ac *acAutomaton[U, C]) MatchFirst(query string) (result MatchResult, ok bool) {
+	ac.match(query, false, func(r MatchResult) bool {
+		result, ok = r, true
+		return false
+	})
+	return result, ok
 }
 
-func (ac *acAutomaton[U]) MatchAll(query string) []MatchResult {
-	var result []MatchResult
-	p := U(0)
-outer:
-	for byteIdx := 0; byteIdx < len(query); {
-		r, size := utf8.DecodeRuneInString(query[byteIdx:])
-		byteIdx += size
-		// 遇到非法字符，回退到 root
-		if r == utf8.RuneError && size == 1 {
-			p = 0
-			continue
-		}
-		// 匹配成功，移动到子节点，失配时，沿 fail 链回退
-		for {
-			if child, ok := ac.getChild(p, r); ok {
-				p = child
-				break
-			}
-			if p == 0 {
-				continue outer
-			}
-			p = ac.fail[p]
-		}
-		// 沿输出链回溯所有匹配结果
-		if len(ac.terms) > 0 { // withTermIdx
-			for i := p; i != ^U(0); i = ac.outputLink[i] {
-				termLen, termIndexes := ac.getTerms(i)
-				for _, termIdx := range termIndexes {
-					result = append(result, makeMatchResultWithTermIdx(query, termLen, termIdx, byteIdx))
-				}
-			}
-		} else {
-			for i := p; i != ^U(0); i = ac.outputLink[i] {
-				if termLen := ac.nodes[i].output; termLen > 0 {
-					result = append(result, makeMatchResult(query, termLen, byteIdx))
-				}
-			}
-		}
-	}
-	return result
+func (ac *acAutomaton[U, C]) MatchAll(query string) []MatchResult {
+	var results []MatchResult
+	ac.match(query, false, func(r MatchResult) bool {
+		results = append(results, r)
+		return true
+	})
+	return results
 }
 
-func (ac *acAutomaton[U]) MatchAllUnique(query string) []MatchResult {
-	var result []MatchResult
-	visit := make(map[U]struct{})
-	p := U(0)
-outer:
-	for byteIdx := 0; byteIdx < len(query); {
-		r, size := utf8.DecodeRuneInString(query[byteIdx:])
-		byteIdx += size
-		// 遇到非法字符，回退到root
-		if r == utf8.RuneError && size == 1 {
-			p = 0
-			continue
-		}
-		// 匹配成功，移动到子节点，失配时，沿 fail 链回退
-		for {
-			if child, ok := ac.getChild(p, r); ok {
-				p = child
-				break
-			}
-			if p == 0 {
-				continue outer
-			}
-			p = ac.fail[p]
-		}
-		// 沿输出链回溯所有匹配结果
-		if len(ac.terms) > 0 { // withTermIdx
-			for i := p; i != ^U(0); i = ac.outputLink[i] {
-				if _, ok := visit[i]; ok {
-					// 当节点已经访问时，其输出链上的必然也访问过了，直接break
-					break
-				}
-				visit[i] = struct{}{}
-				termLen, termIndexes := ac.getTerms(i)
-				for _, termIdx := range termIndexes {
-					result = append(result, makeMatchResultWithTermIdx(query, termLen, termIdx, byteIdx))
-				}
-			}
-		} else {
-			for i := p; i != ^U(0); i = ac.outputLink[i] {
-				if _, ok := visit[i]; ok {
-					// 当节点已经访问时，其输出链上的必然也访问过了，直接break
-					break
-				}
-				visit[i] = struct{}{}
-				if termLen := ac.nodes[i].output; termLen > 0 {
-					result = append(result, makeMatchResult(query, termLen, byteIdx))
-				}
-			}
-		}
-	}
-	return result
+func (ac *acAutomaton[U, C]) MatchAllUnique(query string) []MatchResult {
+	var results []MatchResult
+	ac.match(query, true, func(r MatchResult) bool {
+		results = append(results, r)
+		return true
+	})
+	return results
 }
 
-func (ac *acAutomaton[U]) Save(w io.Writer) error {
-	if err := writeHeader[U](w, typeAcAutomaton); err != nil {
+func (ac *acAutomaton[U, C]) MatchIter(query string) func(yield func(r MatchResult) bool) {
+	return func(yield func(r MatchResult) bool) {
+		ac.match(query, false, yield)
+	}
+}
+
+func (ac *acAutomaton[U, C]) MatchUniqueIter(query string) func(yield func(r MatchResult) bool) {
+	return func(yield func(r MatchResult) bool) {
+		ac.match(query, true, yield)
+	}
+}
+
+func (ac *acAutomaton[U, C]) Save(w io.Writer) error {
+	if err := writeHeader[U, C](w, typeAcAutomaton); err != nil {
 		return err
 	}
 	return ac.save(w)
 }
 
-func (ac *acAutomaton[U]) SaveToFile(filename string) error {
+func (ac *acAutomaton[U, C]) SaveToFile(filename string) error {
 	return saveToFile(filename, ac.Save)
 }
